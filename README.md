@@ -1,6 +1,8 @@
 # BadDiffusion
 Official repo to reproduce the paper "How to Backdoor Diffusion Models?" published at CVPR 2023
 
+Paper link: https://arxiv.org/abs/2212.05400
+
 ## Environment
 
 - Python 3.8.5
