@@ -258,7 +258,7 @@ from PIL import Image
 from torch import nn
 from torchmetrics import StructuralSimilarityIndexMeasure
 from accelerate import Accelerator
-from diffusers.hub_utils import init_git_repo, push_to_hub
+# from diffusers.hub_utils import init_git_repo, push_to_hub
 from tqdm.auto import tqdm
 
 from diffusers import DDPMPipeline
@@ -299,8 +299,8 @@ def get_data_loader(config: TrainingConfig):
 def get_repo(config: TrainingConfig, accelerator: Accelerator):
     repo = None
     if accelerator.is_main_process:
-        if config.push_to_hub:
-            repo = init_git_repo(config, at_init=True)
+        # if config.push_to_hub:
+        #     repo = init_git_repo(config, at_init=True)
         # accelerator.init_trackers(config.output_dir, config=config.__dict__)
         init_tracker(config=config, accelerator=accelerator)
     return repo
@@ -556,10 +556,10 @@ def get_ep_model_path(config: TrainingConfig, dir: Union[str, os.PathLike], epoc
 def checkpoint(config: TrainingConfig, accelerator: Accelerator, pipeline, cur_epoch: int, cur_step: int, repo=None, commit_msg: str=None):
     accelerator.save_state(config.ckpt_path)
     accelerator.save({'epoch': cur_epoch, 'step': cur_step}, config.data_ckpt_path)
-    if config.push_to_hub:
-        push_to_hub(config, pipeline, repo, commit_message=commit_msg, blocking=True)
-    else:
-        pipeline.save_pretrained(config.output_dir)
+    # if config.push_to_hub:
+    #     push_to_hub(config, pipeline, repo, commit_message=commit_msg, blocking=True)
+    # else:
+    pipeline.save_pretrained(config.output_dir)
         
     if config.is_save_all_model_epochs:
         # ep_model_path = os.path.join(config.output_dir, config.ep_model_dir, f"ep{cur_epoch}")
