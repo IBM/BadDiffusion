@@ -42,7 +42,9 @@ Arguments
     - ``train+measure``: Train the model and compute the FID and MSE score
     - ``sampling``: Generate clean samples and backdoor targets from a saved checkpoint
 - ``--dataset``: Training dataset, choice: 'MNIST', 'CIFAR10', and 'CELEBA-HQ'
-- ``--batch``: Training batch size. Note that the batch size must be able to divide 128 for the CIFAR10 dataset and 64 for the CelebA-HQ dataset.
+- ``--batch``: Training batch size. Note that the batch size must be able to divide 128 for 
+the CIFAR10 dataset and 64 for the CelebA-HQ dataset.
+- ``--sched``: Choose sampler algorithm, choice: "DDPM-SCHED", "DDIM-SCHED", "DPM_SOLVER_PP_O1-SCHED", "DPM_SOLVER_O1-SCHED", "DPM_SOLVER_PP_O2-SCHED", "DPM_SOLVER_O2-SCHED", "DPM_SOLVER_PP_O3-SCHED", "DPM_SOLVER_O3-SCHED", "UNIPC-SCHED", "PNDM-SCHED", "DEIS-SCHED", "HEUN-SCHED"
 - ``--eval_max_batch``: Batch size of sampling, default: 256
 - ``--epoch``: Training epoch num, default: 50
 - ``--learning_rate``: Learning rate, default for 32 * 32 image: '2e-4', default for larger images: '8e-5'

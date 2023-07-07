@@ -297,7 +297,11 @@ class DatasetLoader(object):
                 
             examples[DatasetLoader.PIXEL_VALUES] = torch.full_like(examples[DatasetLoader.IMAGE], 0)
             examples[DatasetLoader.TARGET] = torch.clone(examples[DatasetLoader.IMAGE])
-            examples[DatasetLoader.LABEL] = torch.tensor([torch.tensor(x, dtype=torch.float) for x in examples[DatasetLoader.LABEL]])
+            if DatasetLoader.LABEL in examples:
+                examples[DatasetLoader.LABEL] = torch.tensor([torch.tensor(x, dtype=torch.float) for x in examples[DatasetLoader.LABEL]])
+            else:
+                examples[DatasetLoader.LABEL] = torch.tensor([torch.tensor(-1, dtype=torch.float) for i in range(len(examples[DatasetLoader.PIXEL_VALUES]))])
+                
             return examples
         def backdoor_transforms(examples) -> DatasetDict:
             examples = clean_transforms(examples)
