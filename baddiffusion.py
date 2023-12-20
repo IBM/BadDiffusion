@@ -579,7 +579,7 @@ def train_loop(config: TrainingConfig, accelerator: Accelerator, repo, model: nn
         # memlog.append()
         # pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)        
         pipeline = get_pipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
-        sampling(config, 0, pipeline)
+        # sampling(config, 0, pipeline)
         # memlog.append()
 
         # Now you train the model

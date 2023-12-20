@@ -62,6 +62,12 @@ For example, if we want to backdoor a DM pre-trained on CIFAR10 with **Grey Box*
 python baddiffusion.py --project default --mode train+measure --dataset CIFAR10 --batch 128 --epoch 50 --poison_rate 0.1 --trigger BOX_14 --target HAT --ckpt DDPM-CIFAR10-32 --fclip o -o --gpu 0
 ```
 
+If we want to backdoor a DM pre-trained on Celeba-HQ  with **GLASSES** trigger and **CAT** target, we can use the following command
+
+```bash
+python baddiffusion.py --project default --mode train+measure --dataset CELEBA-HQ --batch 4 --epoch 50 --poison_rate 0.1 --trigger GLASSES --target CAT --ckpt DDPM-CELEBA-HQ-256 --fclip o -o --gpu 0
+```
+
 If we want to generate the clean samples and backdoor targets from a backdoored DM, use the following command
 Or simply generate the samples
 

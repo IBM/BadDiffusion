@@ -27,6 +27,7 @@ diffusion/
 wandb/
 ANP_backdoor/
 Default/
+diffusers_old/
 
 !static/*
 NCSNPP_CIFAR10_scratch/
