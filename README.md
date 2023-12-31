@@ -29,6 +29,10 @@ wandb login --relogin --cloud <API Key>
 - CIFAR10: It will be downloaded by HuggingFace ``datasets`` automatically
 - CelebA-HQ: Download the CelebA-HQ dataset and put the images under the folder ``./datasets/celeba_hq_256``
 
+### Pre-Trained Models
+
+I've uploaded all pre-trained backdoor diffusion models for [BadDiffusion](https://github.com/IBM/BadDiffusion) and [VillanDiffusion](https://github.com/IBM/VillanDiffusion) on [HuggingFace](https://huggingface.co/newsyctw). Please feel free to download backdoored diffusion models from it.
+
 ### Run BadDiffusion
 
 Arguments
