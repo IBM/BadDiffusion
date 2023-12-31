@@ -1,4 +1,4 @@
-# Copyright 2022 The HuggingFace Team. All rights reserved.
+# Copyright 2023 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ from typing import Any, Tuple
 
 import numpy as np
 
-from .deprecation_utils import deprecate
 from .import_utils import is_torch_available
 
 
@@ -85,10 +84,7 @@ class BaseOutput(OrderedDict):
 
     def __getitem__(self, k):
         if isinstance(k, str):
-            inner_dict = {k: v for (k, v) in self.items()}
-            if self.__class__.__name__ in ["StableDiffusionPipelineOutput", "ImagePipelineOutput"] and k == "sample":
-                deprecate("samples", "0.6.0", "Please use `.images` or `'images'` instead.")
-                return inner_dict["images"]
+            inner_dict = dict(self.items())
             return inner_dict[k]
         else:
             return self.to_tuple()[k]

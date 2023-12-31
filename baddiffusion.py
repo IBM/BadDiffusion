@@ -45,8 +45,8 @@ DEFAULT_RESULT: int = '.'
 NOT_MODE_TRAIN_OPTS = ['sample_ep']
 NOT_MODE_TRAIN_MEASURE_OPTS = ['sample_ep']
 MODE_RESUME_OPTS = ['project', 'mode', 'gpu', 'ckpt']
-MODE_SAMPLING_OPTS = ['project', 'mode', 'eval_max_batch', 'gpu', 'fclip', 'ckpt', 'sample_ep']
-MODE_MEASURE_OPTS = ['project', 'mode', 'eval_max_batch', 'gpu', 'fclip', 'ckpt', 'sample_ep']
+MODE_SAMPLING_OPTS = ['project', 'mode', 'eval_max_batch', 'gpu', 'fclip', 'ckpt', 'sample_ep', 'sched']
+MODE_MEASURE_OPTS = ['project', 'mode', 'eval_max_batch', 'gpu', 'fclip', 'ckpt', 'sample_ep', 'sched']
 # IGNORE_ARGS = ['overwrite']
 IGNORE_ARGS = ['overwrite', 'is_save_all_model_epochs']
 
@@ -57,6 +57,7 @@ def parse_args():
     parser.add_argument('--mode', '-m', required=True, type=str, help='Train or test the model', choices=[MODE_TRAIN, MODE_RESUME, MODE_SAMPLING, MODE_MEASURE, MODE_TRAIN_MEASURE])
     parser.add_argument('--dataset', '-ds', type=str, help='Training dataset', choices=[DatasetLoader.MNIST, DatasetLoader.CIFAR10, DatasetLoader.CELEBA, DatasetLoader.CELEBA_HQ])
     parser.add_argument('--batch', '-b', type=int, help=f"Batch size, default for train: {DEFAULT_BATCH}")
+    parser.add_argument('--sched', '-sc', type=str, help='Noise scheduler', choices=["DDPM-SCHED", "DDIM-SCHED", "DPM_SOLVER_PP_O1-SCHED", "DPM_SOLVER_O1-SCHED", "DPM_SOLVER_PP_O2-SCHED", "DPM_SOLVER_O2-SCHED", "DPM_SOLVER_PP_O3-SCHED", "DPM_SOLVER_O3-SCHED", "UNIPC-SCHED", "PNDM-SCHED", "DEIS-SCHED", "HEUN-SCHED", "SCORE-SDE-VE-SCHED"])
     parser.add_argument('--eval_max_batch', '-eb', type=int, help=f"Batch size of sampling, default for train: {DEFAULT_EVAL_MAX_BATCH}")
     parser.add_argument('--epoch', '-e', type=int, help=f"Epoch num, default for train: {DEFAULT_EPOCH}")
     parser.add_argument('--learning_rate', '-lr', type=float, help=f"Learning rate, default for 32 * 32 image: {DEFAULT_LEARNING_RATE_32}, default for larger images: {DEFAULT_LEARNING_RATE_256}")
@@ -258,7 +259,7 @@ from PIL import Image
 from torch import nn
 from torchmetrics import StructuralSimilarityIndexMeasure
 from accelerate import Accelerator
-from diffusers.hub_utils import init_git_repo, push_to_hub
+# from diffusers.hub_utils import init_git_repo, push_to_hub
 from tqdm.auto import tqdm
 
 from diffusers import DDPMPipeline
@@ -299,8 +300,8 @@ def get_data_loader(config: TrainingConfig):
 def get_repo(config: TrainingConfig, accelerator: Accelerator):
     repo = None
     if accelerator.is_main_process:
-        if config.push_to_hub:
-            repo = init_git_repo(config, at_init=True)
+        # if config.push_to_hub:
+        #     repo = init_git_repo(config, at_init=True)
         # accelerator.init_trackers(config.output_dir, config=config.__dict__)
         init_tracker(config=config, accelerator=accelerator)
     return repo
@@ -315,10 +316,10 @@ def get_model_optim_sched(config: TrainingConfig, accelerator: Accelerator, data
         #     warnings.warn(Log.warning(f"No such pretrained model: {ep_model_path}, load from ckpt: {config.ckpt}"))
         #     print(Log.warning(f"No such pretrained model: {ep_model_path}, load from ckpt: {config.ckpt}"))
         else:
-            model, noise_sched = DiffuserModelSched.get_pretrained(ckpt=config.ckpt, clip_sample=config.clip)
+            model, noise_sched, get_pipeline = DiffuserModelSched.get_pretrained(ckpt=config.ckpt, clip_sample=config.clip)
         optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     else:
-        model, noise_sched = DiffuserModelSched.get_model_sched(image_size=dataset_loader.image_size, channels=dataset_loader.channel, model_type=DiffuserModelSched.MODEL_DEFAULT, clip_sample=config.clip)
+        model, noise_sched, get_pipeline = DiffuserModelSched.get_model_sched(image_size=dataset_loader.image_size, channels=dataset_loader.channel, model_type=DiffuserModelSched.MODEL_DEFAULT, noise_sched_type=config.sched, clip_sample=config.clip)
         optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
         
     model = nn.DataParallel(model, device_ids=config.device_ids)
@@ -340,20 +341,20 @@ def get_model_optim_sched(config: TrainingConfig, accelerator: Accelerator, data
         cur_epoch = data_ckpt['epoch']
         cur_step = data_ckpt['step']
     
-    return model, optimizer, lr_sched, noise_sched, cur_epoch, cur_step
+    return model, optimizer, lr_sched, noise_sched, cur_epoch, cur_step, get_pipeline
 
 def init_train(config: TrainingConfig, dataset_loader: DatasetLoader):
     # Initialize accelerator and tensorboard logging    
     accelerator = get_accelerator(config=config)
     repo = get_repo(config=config, accelerator=accelerator)
     
-    model, optimizer, lr_sched, noise_sched, cur_epoch, cur_step = get_model_optim_sched(config=config, accelerator=accelerator, dataset_loader=dataset_loader)
+    model, optimizer, lr_sched, noise_sched, cur_epoch, cur_step, get_pipeline = get_model_optim_sched(config=config, accelerator=accelerator, dataset_loader=dataset_loader)
     
     dataloader = dataset_loader.get_dataloader()
     model, optimizer, dataloader, lr_sched = accelerator.prepare(
         model, optimizer, dataloader, lr_sched
     )
-    return accelerator, repo, model, noise_sched, optimizer, dataloader, lr_sched, cur_epoch, cur_step
+    return accelerator, repo, model, noise_sched, optimizer, dataloader, lr_sched, cur_epoch, cur_step, get_pipeline
 
 def make_grid(images, rows, cols):
     w, h = images[0].size
@@ -373,7 +374,8 @@ def sampling(config: TrainingConfig, file_name: Union[int, str], pipeline):
             batch_size = config.eval_sample_n, 
             generator=torch.manual_seed(config.seed),
             init=init,
-            output_type=None
+            output_type=None,
+            save_every_step=True
         )
         images = pipline_res.images
         movie = pipline_res.movie
@@ -556,10 +558,10 @@ def get_ep_model_path(config: TrainingConfig, dir: Union[str, os.PathLike], epoc
 def checkpoint(config: TrainingConfig, accelerator: Accelerator, pipeline, cur_epoch: int, cur_step: int, repo=None, commit_msg: str=None):
     accelerator.save_state(config.ckpt_path)
     accelerator.save({'epoch': cur_epoch, 'step': cur_step}, config.data_ckpt_path)
-    if config.push_to_hub:
-        push_to_hub(config, pipeline, repo, commit_message=commit_msg, blocking=True)
-    else:
-        pipeline.save_pretrained(config.output_dir)
+    # if config.push_to_hub:
+    #     push_to_hub(config, pipeline, repo, commit_message=commit_msg, blocking=True)
+    # else:
+    pipeline.save_pretrained(config.output_dir)
         
     if config.is_save_all_model_epochs:
         # ep_model_path = os.path.join(config.output_dir, config.ep_model_dir, f"ep{cur_epoch}")
@@ -567,7 +569,7 @@ def checkpoint(config: TrainingConfig, accelerator: Accelerator, pipeline, cur_e
         os.makedirs(ep_model_path, exist_ok=True)
         pipeline.save_pretrained(ep_model_path)
 
-def train_loop(config: TrainingConfig, accelerator: Accelerator, repo, model: nn.Module, noise_sched, optimizer: torch.optim, loader, lr_sched, start_epoch: int=0, start_step: int=0):
+def train_loop(config: TrainingConfig, accelerator: Accelerator, repo, model: nn.Module, get_pipeline, noise_sched, optimizer: torch.optim, loader, lr_sched, start_epoch: int=0, start_step: int=0):
     try:
         # memlog = MemoryLog('memlog.log')
         cur_step = start_step
@@ -576,6 +578,7 @@ def train_loop(config: TrainingConfig, accelerator: Accelerator, repo, model: nn
         # Test evaluate
         # memlog.append()
         # pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)        
+        pipeline = get_pipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
         # sampling(config, 0, pipeline)
         # memlog.append()
 
@@ -620,7 +623,8 @@ def train_loop(config: TrainingConfig, accelerator: Accelerator, repo, model: nn
 
             # After each epoch you optionally sample some demo images with evaluate() and save the model
             if accelerator.is_main_process:
-                pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
+                # pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
+                pipeline = get_pipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
 
                 if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.epoch - 1:
                     sampling(config, epoch, pipeline)
@@ -633,7 +637,8 @@ def train_loop(config: TrainingConfig, accelerator: Accelerator, repo, model: nn
         print(traceback.format_exc())
     finally:
         Log.info("Save model and sample images")
-        pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)        
+        # pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)        
+        pipeline = get_pipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
         if accelerator.is_main_process:
             checkpoint(config=config, accelerator=accelerator, pipeline=pipeline, cur_epoch=epoch, cur_step=cur_step, repo=repo, commit_msg=f"Epoch {epoch}")
             sampling(config, 'final', pipeline)
@@ -644,23 +649,25 @@ def train_loop(config: TrainingConfig, accelerator: Accelerator, repo, model: nn
 Let's launch the training (including multi-GPU training) from the notebook using Accelerate's `notebook_launcher` function:
 """
 dsl = get_data_loader(config=config)
-accelerator, repo, model, noise_sched, optimizer, dataloader, lr_sched, cur_epoch, cur_step = init_train(config=config, dataset_loader=dsl)
+accelerator, repo, model, noise_sched, optimizer, dataloader, lr_sched, cur_epoch, cur_step, get_pipeline = init_train(config=config, dataset_loader=dsl)
 
 if config.mode == MODE_TRAIN or config.mode == MODE_RESUME or config.mode == MODE_TRAIN_MEASURE:
-    pipeline = train_loop(config, accelerator, repo, model, noise_sched, optimizer, dataloader, lr_sched, start_epoch=cur_epoch, start_step=cur_step)
+    pipeline = train_loop(config, accelerator, repo, model, get_pipeline, noise_sched, optimizer, dataloader, lr_sched, start_epoch=cur_epoch, start_step=cur_step)
 
     if config.mode == MODE_TRAIN_MEASURE and accelerator.is_main_process:
         accelerator.free_memory()
         accelerator.clear()
         measure(config=config, accelerator=accelerator, dataset_loader=dsl, folder_name='measure', pipeline=pipeline)
 elif config.mode == MODE_SAMPLING:
-    pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
+    # pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
+    pipeline = get_pipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
     if config.sample_ep != None:
         sampling(config=config, file_name=int(config.sample_ep), pipeline=pipeline)
     else:
         sampling(config=config, file_name="final", pipeline=pipeline)
 elif config.mode == MODE_MEASURE:
-    pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
+    # pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
+    pipeline = get_pipeline(unet=accelerator.unwrap_model(model), scheduler=noise_sched)
     measure(config=config, accelerator=accelerator, dataset_loader=dsl, folder_name='measure', pipeline=pipeline)
     if config.sample_ep != None:
         sampling(config=config, file_name=int(config.sample_ep), pipeline=pipeline)

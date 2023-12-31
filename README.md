@@ -1,6 +1,8 @@
 # BadDiffusion
 Official repo to reproduce the paper "How to Backdoor Diffusion Models?" published at CVPR 2023
 
+Paper link: https://arxiv.org/abs/2212.05400
+
 ## Environment
 
 - Python 3.8.5
@@ -44,7 +46,9 @@ Arguments
     - ``train+measure``: Train the model and compute the FID and MSE score
     - ``sampling``: Generate clean samples and backdoor targets from a saved checkpoint
 - ``--dataset``: Training dataset, choice: 'MNIST', 'CIFAR10', and 'CELEBA-HQ'
-- ``--batch``: Training batch size. Note that the batch size must be able to divide 128 for the CIFAR10 dataset and 64 for the CelebA-HQ dataset.
+- ``--batch``: Training batch size. Note that the batch size must be able to divide 128 for 
+the CIFAR10 dataset and 64 for the CelebA-HQ dataset.
+- ``--sched``: Choose sampler algorithm, choice: "DDPM-SCHED", "DDIM-SCHED", "DPM_SOLVER_PP_O1-SCHED", "DPM_SOLVER_O1-SCHED", "DPM_SOLVER_PP_O2-SCHED", "DPM_SOLVER_O2-SCHED", "DPM_SOLVER_PP_O3-SCHED", "DPM_SOLVER_O3-SCHED", "UNIPC-SCHED", "PNDM-SCHED", "DEIS-SCHED", "HEUN-SCHED"
 - ``--eval_max_batch``: Batch size of sampling, default: 256
 - ``--epoch``: Training epoch num, default: 50
 - ``--learning_rate``: Learning rate, default for 32 * 32 image: '2e-4', default for larger images: '8e-5'
@@ -60,6 +64,12 @@ For example, if we want to backdoor a DM pre-trained on CIFAR10 with **Grey Box*
 
 ```bash
 python baddiffusion.py --project default --mode train+measure --dataset CIFAR10 --batch 128 --epoch 50 --poison_rate 0.1 --trigger BOX_14 --target HAT --ckpt DDPM-CIFAR10-32 --fclip o -o --gpu 0
+```
+
+If we want to backdoor a DM pre-trained on Celeba-HQ  with **GLASSES** trigger and **CAT** target, we can use the following command
+
+```bash
+python baddiffusion.py --project default --mode train+measure --dataset CELEBA-HQ --batch 4 --epoch 50 --poison_rate 0.1 --trigger GLASSES --target CAT --ckpt DDPM-CELEBA-HQ-256 --fclip o -o --gpu 0
 ```
 
 If we want to generate the clean samples and backdoor targets from a backdoored DM, use the following command

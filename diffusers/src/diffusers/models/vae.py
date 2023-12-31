@@ -1,4 +1,4 @@
-# Copyright 2022 The HuggingFace Team. All rights reserved.
+# Copyright 2023 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,16 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from ..configuration_utils import ConfigMixin, register_to_config
-from ..modeling_utils import ModelMixin
-from ..utils import BaseOutput
-from .unet_blocks import UNetMidBlock2D, get_down_block, get_up_block
+from ..utils import BaseOutput, randn_tensor
+from .unet_2d_blocks import UNetMidBlock2D, get_down_block, get_up_block
 
 
 @dataclass
@@ -35,33 +33,6 @@ class DecoderOutput(BaseOutput):
     """
 
     sample: torch.FloatTensor
-
-
-@dataclass
-class VQEncoderOutput(BaseOutput):
-    """
-    Output of VQModel encoding method.
-
-    Args:
-        latents (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`):
-            Encoded output sample of the model. Output of the last layer of the model.
-    """
-
-    latents: torch.FloatTensor
-
-
-@dataclass
-class AutoencoderKLOutput(BaseOutput):
-    """
-    Output of AutoencoderKL encoding method.
-
-    Args:
-        latent_dist (`DiagonalGaussianDistribution`):
-            Encoded outputs of `Encoder` represented as the mean and logvar of `DiagonalGaussianDistribution`.
-            `DiagonalGaussianDistribution` allows for sampling latents from the distribution.
-    """
-
-    latent_dist: "DiagonalGaussianDistribution"
 
 
 class Encoder(nn.Module):
@@ -79,7 +50,13 @@ class Encoder(nn.Module):
         super().__init__()
         self.layers_per_block = layers_per_block
 
-        self.conv_in = torch.nn.Conv2d(in_channels, block_out_channels[0], kernel_size=3, stride=1, padding=1)
+        self.conv_in = torch.nn.Conv2d(
+            in_channels,
+            block_out_channels[0],
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
 
         self.mid_block = None
         self.down_blocks = nn.ModuleList([])
@@ -125,16 +102,34 @@ class Encoder(nn.Module):
         conv_out_channels = 2 * out_channels if double_z else out_channels
         self.conv_out = nn.Conv2d(block_out_channels[-1], conv_out_channels, 3, padding=1)
 
+        self.gradient_checkpointing = False
+
     def forward(self, x):
         sample = x
         sample = self.conv_in(sample)
 
-        # down
-        for down_block in self.down_blocks:
-            sample = down_block(sample)
+        if self.training and self.gradient_checkpointing:
 
-        # middle
-        sample = self.mid_block(sample)
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+
+                return custom_forward
+
+            # down
+            for down_block in self.down_blocks:
+                sample = torch.utils.checkpoint.checkpoint(create_custom_forward(down_block), sample)
+
+            # middle
+            sample = torch.utils.checkpoint.checkpoint(create_custom_forward(self.mid_block), sample)
+
+        else:
+            # down
+            for down_block in self.down_blocks:
+                sample = down_block(sample)
+
+            # middle
+            sample = self.mid_block(sample)
 
         # post-process
         sample = self.conv_norm_out(sample)
@@ -158,7 +153,13 @@ class Decoder(nn.Module):
         super().__init__()
         self.layers_per_block = layers_per_block
 
-        self.conv_in = nn.Conv2d(in_channels, block_out_channels[-1], kernel_size=3, stride=1, padding=1)
+        self.conv_in = nn.Conv2d(
+            in_channels,
+            block_out_channels[-1],
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
 
         self.mid_block = None
         self.up_blocks = nn.ModuleList([])
@@ -205,16 +206,33 @@ class Decoder(nn.Module):
         self.conv_act = nn.SiLU()
         self.conv_out = nn.Conv2d(block_out_channels[0], out_channels, 3, padding=1)
 
+        self.gradient_checkpointing = False
+
     def forward(self, z):
         sample = z
         sample = self.conv_in(sample)
 
-        # middle
-        sample = self.mid_block(sample)
+        if self.training and self.gradient_checkpointing:
 
-        # up
-        for up_block in self.up_blocks:
-            sample = up_block(sample)
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+
+                return custom_forward
+
+            # middle
+            sample = torch.utils.checkpoint.checkpoint(create_custom_forward(self.mid_block), sample)
+
+            # up
+            for up_block in self.up_blocks:
+                sample = torch.utils.checkpoint.checkpoint(create_custom_forward(up_block), sample)
+        else:
+            # middle
+            sample = self.mid_block(sample)
+
+            # up
+            for up_block in self.up_blocks:
+                sample = up_block(sample)
 
         # post-process
         sample = self.conv_norm_out(sample)
@@ -233,14 +251,16 @@ class VectorQuantizer(nn.Module):
     # NOTE: due to a bug the beta term was applied to the wrong term. for
     # backwards compatibility we use the buggy version by default, but you can
     # specify legacy=False to fix it.
-    def __init__(self, n_e, e_dim, beta, remap=None, unknown_index="random", sane_index_shape=False, legacy=True):
+    def __init__(
+        self, n_e, vq_embed_dim, beta, remap=None, unknown_index="random", sane_index_shape=False, legacy=True
+    ):
         super().__init__()
         self.n_e = n_e
-        self.e_dim = e_dim
+        self.vq_embed_dim = vq_embed_dim
         self.beta = beta
         self.legacy = legacy
 
-        self.embedding = nn.Embedding(self.n_e, self.e_dim)
+        self.embedding = nn.Embedding(self.n_e, self.vq_embed_dim)
         self.embedding.weight.data.uniform_(-1.0 / self.n_e, 1.0 / self.n_e)
 
         self.remap = remap
@@ -287,16 +307,11 @@ class VectorQuantizer(nn.Module):
     def forward(self, z):
         # reshape z -> (batch, height, width, channel) and flatten
         z = z.permute(0, 2, 3, 1).contiguous()
-        z_flattened = z.view(-1, self.e_dim)
+        z_flattened = z.view(-1, self.vq_embed_dim)
+
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
+        min_encoding_indices = torch.argmin(torch.cdist(z_flattened, self.embedding.weight), dim=1)
 
-        d = (
-            torch.sum(z_flattened**2, dim=1, keepdim=True)
-            + torch.sum(self.embedding.weight**2, dim=1)
-            - 2 * torch.einsum("bd,dn->bn", z_flattened, self.embedding.weight.t())
-        )
-
-        min_encoding_indices = torch.argmin(d, dim=1)
         z_q = self.embedding(min_encoding_indices).view(z.shape)
         perplexity = None
         min_encodings = None
@@ -355,11 +370,10 @@ class DiagonalGaussianDistribution(object):
             )
 
     def sample(self, generator: Optional[torch.Generator] = None) -> torch.FloatTensor:
-        device = self.parameters.device
-        sample_device = "cpu" if device.type == "mps" else device
-        sample = torch.randn(self.mean.shape, generator=generator, device=sample_device)
         # make sure sample is on the same device as the parameters and has same dtype
-        sample = sample.to(device=device, dtype=self.parameters.dtype)
+        sample = randn_tensor(
+            self.mean.shape, generator=generator, device=self.parameters.device, dtype=self.parameters.dtype
+        )
         x = self.mean + self.std * sample
         return x
 
@@ -387,224 +401,3 @@ class DiagonalGaussianDistribution(object):
 
     def mode(self):
         return self.mean
-
-
-class VQModel(ModelMixin, ConfigMixin):
-    r"""VQ-VAE model from the paper Neural Discrete Representation Learning by Aaron van den Oord, Oriol Vinyals and Koray
-    Kavukcuoglu.
-
-    This model inherits from [`ModelMixin`]. Check the superclass documentation for the generic methods the library
-    implements for all the model (such as downloading or saving, etc.)
-
-    Parameters:
-        in_channels (int, *optional*, defaults to 3): Number of channels in the input image.
-        out_channels (int,  *optional*, defaults to 3): Number of channels in the output.
-        down_block_types (`Tuple[str]`, *optional*, defaults to :
-            obj:`("DownEncoderBlock2D",)`): Tuple of downsample block types.
-        up_block_types (`Tuple[str]`, *optional*, defaults to :
-            obj:`("UpDecoderBlock2D",)`): Tuple of upsample block types.
-        block_out_channels (`Tuple[int]`, *optional*, defaults to :
-            obj:`(64,)`): Tuple of block output channels.
-        act_fn (`str`, *optional*, defaults to `"silu"`): The activation function to use.
-        latent_channels (`int`, *optional*, defaults to `3`): Number of channels in the latent space.
-        sample_size (`int`, *optional*, defaults to `32`): TODO
-        num_vq_embeddings (`int`, *optional*, defaults to `256`): Number of codebook vectors in the VQ-VAE.
-    """
-
-    @register_to_config
-    def __init__(
-        self,
-        in_channels: int = 3,
-        out_channels: int = 3,
-        down_block_types: Tuple[str] = ("DownEncoderBlock2D",),
-        up_block_types: Tuple[str] = ("UpDecoderBlock2D",),
-        block_out_channels: Tuple[int] = (64,),
-        layers_per_block: int = 1,
-        act_fn: str = "silu",
-        latent_channels: int = 3,
-        sample_size: int = 32,
-        num_vq_embeddings: int = 256,
-        norm_num_groups: int = 32,
-    ):
-        super().__init__()
-
-        # pass init params to Encoder
-        self.encoder = Encoder(
-            in_channels=in_channels,
-            out_channels=latent_channels,
-            down_block_types=down_block_types,
-            block_out_channels=block_out_channels,
-            layers_per_block=layers_per_block,
-            act_fn=act_fn,
-            norm_num_groups=norm_num_groups,
-            double_z=False,
-        )
-
-        self.quant_conv = torch.nn.Conv2d(latent_channels, latent_channels, 1)
-        self.quantize = VectorQuantizer(
-            num_vq_embeddings, latent_channels, beta=0.25, remap=None, sane_index_shape=False
-        )
-        self.post_quant_conv = torch.nn.Conv2d(latent_channels, latent_channels, 1)
-
-        # pass init params to Decoder
-        self.decoder = Decoder(
-            in_channels=latent_channels,
-            out_channels=out_channels,
-            up_block_types=up_block_types,
-            block_out_channels=block_out_channels,
-            layers_per_block=layers_per_block,
-            act_fn=act_fn,
-            norm_num_groups=norm_num_groups,
-        )
-
-    def encode(self, x: torch.FloatTensor, return_dict: bool = True) -> VQEncoderOutput:
-        h = self.encoder(x)
-        h = self.quant_conv(h)
-
-        if not return_dict:
-            return (h,)
-
-        return VQEncoderOutput(latents=h)
-
-    def decode(
-        self, h: torch.FloatTensor, force_not_quantize: bool = False, return_dict: bool = True
-    ) -> Union[DecoderOutput, torch.FloatTensor]:
-        # also go through quantization layer
-        if not force_not_quantize:
-            quant, emb_loss, info = self.quantize(h)
-        else:
-            quant = h
-        quant = self.post_quant_conv(quant)
-        dec = self.decoder(quant)
-
-        if not return_dict:
-            return (dec,)
-
-        return DecoderOutput(sample=dec)
-
-    def forward(self, sample: torch.FloatTensor, return_dict: bool = True) -> Union[DecoderOutput, torch.FloatTensor]:
-        r"""
-        Args:
-            sample (`torch.FloatTensor`): Input sample.
-            return_dict (`bool`, *optional*, defaults to `True`):
-                Whether or not to return a [`DecoderOutput`] instead of a plain tuple.
-        """
-        x = sample
-        h = self.encode(x).latents
-        dec = self.decode(h).sample
-
-        if not return_dict:
-            return (dec,)
-
-        return DecoderOutput(sample=dec)
-
-
-class AutoencoderKL(ModelMixin, ConfigMixin):
-    r"""Variational Autoencoder (VAE) model with KL loss from the paper Auto-Encoding Variational Bayes by Diederik P. Kingma
-    and Max Welling.
-
-    This model inherits from [`ModelMixin`]. Check the superclass documentation for the generic methods the library
-    implements for all the model (such as downloading or saving, etc.)
-
-    Parameters:
-        in_channels (int, *optional*, defaults to 3): Number of channels in the input image.
-        out_channels (int,  *optional*, defaults to 3): Number of channels in the output.
-        down_block_types (`Tuple[str]`, *optional*, defaults to :
-            obj:`("DownEncoderBlock2D",)`): Tuple of downsample block types.
-        up_block_types (`Tuple[str]`, *optional*, defaults to :
-            obj:`("UpDecoderBlock2D",)`): Tuple of upsample block types.
-        block_out_channels (`Tuple[int]`, *optional*, defaults to :
-            obj:`(64,)`): Tuple of block output channels.
-        act_fn (`str`, *optional*, defaults to `"silu"`): The activation function to use.
-        latent_channels (`int`, *optional*, defaults to `4`): Number of channels in the latent space.
-        sample_size (`int`, *optional*, defaults to `32`): TODO
-    """
-
-    @register_to_config
-    def __init__(
-        self,
-        in_channels: int = 3,
-        out_channels: int = 3,
-        down_block_types: Tuple[str] = ("DownEncoderBlock2D",),
-        up_block_types: Tuple[str] = ("UpDecoderBlock2D",),
-        block_out_channels: Tuple[int] = (64,),
-        layers_per_block: int = 1,
-        act_fn: str = "silu",
-        latent_channels: int = 4,
-        norm_num_groups: int = 32,
-        sample_size: int = 32,
-    ):
-        super().__init__()
-
-        # pass init params to Encoder
-        self.encoder = Encoder(
-            in_channels=in_channels,
-            out_channels=latent_channels,
-            down_block_types=down_block_types,
-            block_out_channels=block_out_channels,
-            layers_per_block=layers_per_block,
-            act_fn=act_fn,
-            norm_num_groups=norm_num_groups,
-            double_z=True,
-        )
-
-        # pass init params to Decoder
-        self.decoder = Decoder(
-            in_channels=latent_channels,
-            out_channels=out_channels,
-            up_block_types=up_block_types,
-            block_out_channels=block_out_channels,
-            layers_per_block=layers_per_block,
-            norm_num_groups=norm_num_groups,
-            act_fn=act_fn,
-        )
-
-        self.quant_conv = torch.nn.Conv2d(2 * latent_channels, 2 * latent_channels, 1)
-        self.post_quant_conv = torch.nn.Conv2d(latent_channels, latent_channels, 1)
-
-    def encode(self, x: torch.FloatTensor, return_dict: bool = True) -> AutoencoderKLOutput:
-        h = self.encoder(x)
-        moments = self.quant_conv(h)
-        posterior = DiagonalGaussianDistribution(moments)
-
-        if not return_dict:
-            return (posterior,)
-
-        return AutoencoderKLOutput(latent_dist=posterior)
-
-    def decode(self, z: torch.FloatTensor, return_dict: bool = True) -> Union[DecoderOutput, torch.FloatTensor]:
-        z = self.post_quant_conv(z)
-        dec = self.decoder(z)
-
-        if not return_dict:
-            return (dec,)
-
-        return DecoderOutput(sample=dec)
-
-    def forward(
-        self,
-        sample: torch.FloatTensor,
-        sample_posterior: bool = False,
-        return_dict: bool = True,
-        generator: Optional[torch.Generator] = None,
-    ) -> Union[DecoderOutput, torch.FloatTensor]:
-        r"""
-        Args:
-            sample (`torch.FloatTensor`): Input sample.
-            sample_posterior (`bool`, *optional*, defaults to `False`):
-                Whether to sample from the posterior.
-            return_dict (`bool`, *optional*, defaults to `True`):
-                Whether or not to return a [`DecoderOutput`] instead of a plain tuple.
-        """
-        x = sample
-        posterior = self.encode(x).latent_dist
-        if sample_posterior:
-            z = posterior.sample(generator=generator)
-        else:
-            z = posterior.mode()
-        dec = self.decode(z).sample
-
-        if not return_dict:
-            return (dec,)
-
-        return DecoderOutput(sample=dec)

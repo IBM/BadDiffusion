@@ -1,11 +1,25 @@
-#!/usr/bin/env python3
-from typing import Optional, Tuple, Union
+# Copyright 2023 The HuggingFace Team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from typing import List, Optional, Tuple, Union
 
 import torch
 
 from ...models import UNet2DModel
-from ...pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from ...schedulers import ScoreSdeVeScheduler
+from ...utils import randn_tensor
+from ..pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 
 
 class ScoreSdeVePipeline(DiffusionPipeline):
@@ -28,8 +42,10 @@ class ScoreSdeVePipeline(DiffusionPipeline):
         self,
         batch_size: int = 1,
         num_inference_steps: int = 2000,
-        generator: Optional[torch.Generator] = None,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         output_type: Optional[str] = "pil",
+        init: torch.Tensor = None, 
+        save_every_step: bool = False,
         return_dict: bool = True,
         **kwargs,
     ) -> Union[ImagePipelineOutput, Tuple]:
@@ -38,18 +54,17 @@ class ScoreSdeVePipeline(DiffusionPipeline):
             batch_size (`int`, *optional*, defaults to 1):
                 The number of images to generate.
             generator (`torch.Generator`, *optional*):
-                A [torch generator](https://pytorch.org/docs/stable/generated/torch.Generator.html) to make generation
-                deterministic.
+                One or a list of [torch generator(s)](https://pytorch.org/docs/stable/generated/torch.Generator.html)
+                to make generation deterministic.
             output_type (`str`, *optional*, defaults to `"pil"`):
                 The output format of the generate image. Choose between
                 [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
             return_dict (`bool`, *optional*, defaults to `True`):
-                Whether or not to return a [`~pipeline_utils.ImagePipelineOutput`] instead of a plain tuple.
+                Whether or not to return a [`~pipelines.ImagePipelineOutput`] instead of a plain tuple.
 
         Returns:
-            [`~pipeline_utils.ImagePipelineOutput`] or `tuple`: [`~pipelines.utils.ImagePipelineOutput`] if
-            `return_dict` is True, otherwise a `tuple. When returning a tuple, the first element is a list with the
-            generated images.
+            [`~pipelines.ImagePipelineOutput`] or `tuple`: [`~pipelines.utils.ImagePipelineOutput`] if `return_dict` is
+            True, otherwise a `tuple. When returning a tuple, the first element is a list with the generated images.
         """
 
         img_size = self.unet.config.sample_size
@@ -57,12 +72,18 @@ class ScoreSdeVePipeline(DiffusionPipeline):
 
         model = self.unet
 
-        sample = torch.randn(*shape, generator=generator) * self.scheduler.init_noise_sigma
-        sample = sample.to(self.device)
+        if init == None:
+            sample = randn_tensor(shape, generator=generator) * self.scheduler.init_noise_sigma
+            sample = sample.to(self.device)
+        else:
+            sample = init.detach().clone().to(self.device) * self.scheduler.init_noise_sigma
 
         self.scheduler.set_timesteps(num_inference_steps)
         self.scheduler.set_sigmas(num_inference_steps)
 
+        mov = []
+        if save_every_step:
+            mov = [sample.clamp(0, 1).cpu().permute(0, 2, 3, 1).numpy()]
         for i, t in enumerate(self.progress_bar(self.scheduler.timesteps)):
             sigma_t = self.scheduler.sigmas[i] * torch.ones(shape[0], device=self.device)
 
@@ -76,13 +97,17 @@ class ScoreSdeVePipeline(DiffusionPipeline):
             output = self.scheduler.step_pred(model_output, t, sample, generator=generator)
 
             sample, sample_mean = output.prev_sample, output.prev_sample_mean
+            if save_every_step:
+                mov.append(sample_mean.clamp(0, 1).cpu().permute(0, 2, 3, 1).numpy())
 
         sample = sample_mean.clamp(0, 1)
         sample = sample.cpu().permute(0, 2, 3, 1).numpy()
         if output_type == "pil":
             sample = self.numpy_to_pil(sample)
+            if save_every_step:
+                mov = list(map(self.numpy_to_pil, mov))
 
         if not return_dict:
             return (sample,)
 
-        return ImagePipelineOutput(images=sample)
+        return ImagePipelineOutput(images=sample, movie=mov)

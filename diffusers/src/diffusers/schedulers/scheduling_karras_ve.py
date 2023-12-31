@@ -1,4 +1,4 @@
-# Copyright 2022 NVIDIA and The HuggingFace Team. All rights reserved.
+# Copyright 2023 NVIDIA and The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 from ..configuration_utils import ConfigMixin, register_to_config
-from ..utils import BaseOutput, deprecate
+from ..utils import BaseOutput, randn_tensor
 from .scheduling_utils import SchedulerMixin
 
 
@@ -56,8 +56,8 @@ class KarrasVeScheduler(SchedulerMixin, ConfigMixin):
 
     [`~ConfigMixin`] takes care of storing all config attributes that are passed in the scheduler's `__init__`
     function, such as `num_train_timesteps`. They can be accessed via `scheduler.config.num_train_timesteps`.
-    [`~ConfigMixin`] also provides general loading and saving functionality via the [`~ConfigMixin.save_config`] and
-    [`~ConfigMixin.from_config`] functions.
+    [`SchedulerMixin`] provides general loading and saving functionality via the [`SchedulerMixin.save_pretrained`] and
+    [`~SchedulerMixin.from_pretrained`] functions.
 
     For more details on the parameters, see the original paper's Appendix E.: "Elucidating the Design Space of
     Diffusion-Based Generative Models." https://arxiv.org/abs/2206.00364. The grid search values used to find the
@@ -77,24 +77,19 @@ class KarrasVeScheduler(SchedulerMixin, ConfigMixin):
 
     """
 
+    order = 2
+
     @register_to_config
     def __init__(
         self,
+        num_train_timesteps: int = 2000,
         sigma_min: float = 0.02,
         sigma_max: float = 100,
         s_noise: float = 1.007,
         s_churn: float = 80,
         s_min: float = 0.05,
         s_max: float = 50,
-        **kwargs,
     ):
-        deprecate(
-            "tensor_format",
-            "0.6.0",
-            "If you're running your code in PyTorch, you can safely remove this argument.",
-            take_from=kwargs,
-        )
-
         # standard deviation of the initial noise distribution
         self.init_noise_sigma = sigma_max
 
@@ -102,6 +97,17 @@ class KarrasVeScheduler(SchedulerMixin, ConfigMixin):
         self.num_inference_steps: int = None
         self.timesteps: np.IntTensor = None
         self.schedule: torch.FloatTensor = None  # sigma(t_i)
+        
+        timesteps = np.arange(0, num_train_timesteps)[::-1].copy()
+        timesteps = torch.from_numpy(timesteps)
+        sigmas = [
+            (
+                self.config.sigma_max**2
+                * (self.config.sigma_min**2 / self.config.sigma_max**2) ** (i / (num_train_timesteps - 1))
+            )
+            for i in timesteps
+        ]
+        self.sigmas = torch.tensor(sigmas, dtype=torch.float32)
 
     def scale_model_input(self, sample: torch.FloatTensor, timestep: Optional[int] = None) -> torch.FloatTensor:
         """
@@ -153,7 +159,7 @@ class KarrasVeScheduler(SchedulerMixin, ConfigMixin):
             gamma = 0
 
         # sample eps ~ N(0, S_noise^2 * I)
-        eps = self.config.s_noise * torch.randn(sample.shape, generator=generator).to(sample.device)
+        eps = self.config.s_noise * randn_tensor(sample.shape, generator=generator).to(sample.device)
         sigma_hat = sigma + gamma * sigma
         sample_hat = sample + ((sigma_hat**2 - sigma**2) ** 0.5 * eps)
 

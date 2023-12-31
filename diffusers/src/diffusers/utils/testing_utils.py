@@ -1,28 +1,85 @@
 import inspect
+import logging
 import os
 import random
 import re
+import tempfile
 import unittest
+import urllib.parse
 from distutils.util import strtobool
+from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Union
+from typing import List, Optional, Union
 
-import torch
-
+import numpy as np
 import PIL.Image
 import PIL.ImageOps
 import requests
 from packaging import version
 
-from .import_utils import is_flax_available
+from .import_utils import (
+    BACKENDS_MAPPING,
+    is_compel_available,
+    is_flax_available,
+    is_note_seq_available,
+    is_onnx_available,
+    is_opencv_available,
+    is_torch_available,
+    is_torch_version,
+)
+from .logging import get_logger
 
 
 global_rng = random.Random()
-torch_device = "cuda" if torch.cuda.is_available() else "cpu"
-is_torch_higher_equal_than_1_12 = version.parse(version.parse(torch.__version__).base_version) >= version.parse("1.12")
 
-if is_torch_higher_equal_than_1_12:
-    torch_device = "mps" if torch.backends.mps.is_available() else torch_device
+logger = get_logger(__name__)
+
+if is_torch_available():
+    import torch
+
+    if "DIFFUSERS_TEST_DEVICE" in os.environ:
+        torch_device = os.environ["DIFFUSERS_TEST_DEVICE"]
+
+        available_backends = ["cuda", "cpu", "mps"]
+        if torch_device not in available_backends:
+            raise ValueError(
+                f"unknown torch backend for diffusers tests: {torch_device}. Available backends are:"
+                f" {available_backends}"
+            )
+        logger.info(f"torch_device overrode to {torch_device}")
+    else:
+        torch_device = "cuda" if torch.cuda.is_available() else "cpu"
+        is_torch_higher_equal_than_1_12 = version.parse(
+            version.parse(torch.__version__).base_version
+        ) >= version.parse("1.12")
+
+        if is_torch_higher_equal_than_1_12:
+            # Some builds of torch 1.12 don't have the mps backend registered. See #892 for more details
+            mps_backend_registered = hasattr(torch.backends, "mps")
+            torch_device = "mps" if (mps_backend_registered and torch.backends.mps.is_available()) else torch_device
+
+
+def torch_all_close(a, b, *args, **kwargs):
+    if not is_torch_available():
+        raise ValueError("PyTorch needs to be installed to use this function.")
+    if not torch.allclose(a, b, *args, **kwargs):
+        assert False, f"Max diff is absolute {(a - b).abs().max()}. Diff tensor is {(a - b).abs()}."
+    return True
+
+
+def print_tensor_test(tensor, filename="test_corrections.txt", expected_tensor_name="expected_slice"):
+    test_name = os.environ.get("PYTEST_CURRENT_TEST")
+    if not torch.is_tensor(tensor):
+        tensor = torch.from_numpy(tensor)
+
+    tensor_str = str(tensor.detach().cpu().flatten().to(torch.float32)).replace("\n", "")
+    # format is usually:
+    # expected_slice = np.array([-0.5713, -0.3018, -0.9814, 0.04663, -0.879, 0.76, -1.734, 0.1044, 1.161])
+    output_str = tensor_str.replace("tensor", f"{expected_tensor_name} = np.array")
+    test_file, test_class, test_fn = test_name.split("::")
+    test_fn = test_fn.split()[0]
+    with open(filename, "a") as f:
+        print(";".join([test_file, test_class, test_fn, output_str]), file=f)
 
 
 def get_tests_dir(append_path=None):
@@ -63,6 +120,7 @@ def parse_flag_from_env(key, default=False):
 
 
 _run_slow_tests = parse_flag_from_env("RUN_SLOW", default=False)
+_run_nightly_tests = parse_flag_from_env("RUN_NIGHTLY", default=False)
 
 
 def floats_tensor(shape, scale=1.0, rng=None, name=None):
@@ -91,11 +149,105 @@ def slow(test_case):
     return unittest.skipUnless(_run_slow_tests, "test is slow")(test_case)
 
 
+def nightly(test_case):
+    """
+    Decorator marking a test that runs nightly in the diffusers CI.
+
+    Slow tests are skipped by default. Set the RUN_NIGHTLY environment variable to a truthy value to run them.
+
+    """
+    return unittest.skipUnless(_run_nightly_tests, "test is nightly")(test_case)
+
+
+def require_torch(test_case):
+    """
+    Decorator marking a test that requires PyTorch. These tests are skipped when PyTorch isn't installed.
+    """
+    return unittest.skipUnless(is_torch_available(), "test requires PyTorch")(test_case)
+
+
+def require_torch_2(test_case):
+    """
+    Decorator marking a test that requires PyTorch 2. These tests are skipped when it isn't installed.
+    """
+    return unittest.skipUnless(is_torch_available() and is_torch_version(">=", "2.0.0"), "test requires PyTorch 2")(
+        test_case
+    )
+
+
+def require_torch_gpu(test_case):
+    """Decorator marking a test that requires CUDA and PyTorch."""
+    return unittest.skipUnless(is_torch_available() and torch_device == "cuda", "test requires PyTorch+CUDA")(
+        test_case
+    )
+
+
+def skip_mps(test_case):
+    """Decorator marking a test to skip if torch_device is 'mps'"""
+    return unittest.skipUnless(torch_device != "mps", "test requires non 'mps' device")(test_case)
+
+
 def require_flax(test_case):
     """
     Decorator marking a test that requires JAX & Flax. These tests are skipped when one / both are not installed
     """
     return unittest.skipUnless(is_flax_available(), "test requires JAX & Flax")(test_case)
+
+
+def require_compel(test_case):
+    """
+    Decorator marking a test that requires compel: https://github.com/damian0815/compel. These tests are skipped when
+    the library is not installed.
+    """
+    return unittest.skipUnless(is_compel_available(), "test requires compel")(test_case)
+
+
+def require_onnxruntime(test_case):
+    """
+    Decorator marking a test that requires onnxruntime. These tests are skipped when onnxruntime isn't installed.
+    """
+    return unittest.skipUnless(is_onnx_available(), "test requires onnxruntime")(test_case)
+
+
+def require_note_seq(test_case):
+    """
+    Decorator marking a test that requires note_seq. These tests are skipped when note_seq isn't installed.
+    """
+    return unittest.skipUnless(is_note_seq_available(), "test requires note_seq")(test_case)
+
+
+def load_numpy(arry: Union[str, np.ndarray], local_path: Optional[str] = None) -> np.ndarray:
+    if isinstance(arry, str):
+        # local_path = "/home/patrick_huggingface_co/"
+        if local_path is not None:
+            # local_path can be passed to correct images of tests
+            return os.path.join(local_path, "/".join([arry.split("/")[-5], arry.split("/")[-2], arry.split("/")[-1]]))
+        elif arry.startswith("http://") or arry.startswith("https://"):
+            response = requests.get(arry)
+            response.raise_for_status()
+            arry = np.load(BytesIO(response.content))
+        elif os.path.isfile(arry):
+            arry = np.load(arry)
+        else:
+            raise ValueError(
+                f"Incorrect path or url, URLs must start with `http://` or `https://`, and {arry} is not a valid path"
+            )
+    elif isinstance(arry, np.ndarray):
+        pass
+    else:
+        raise ValueError(
+            "Incorrect format used for numpy ndarray. Should be an url linking to an image, a local path, or a"
+            " ndarray."
+        )
+
+    return arry
+
+
+def load_pt(url: str):
+    response = requests.get(url)
+    response.raise_for_status()
+    arry = torch.load(BytesIO(response.content))
+    return arry
 
 
 def load_image(image: Union[str, PIL.Image.Image]) -> PIL.Image.Image:
@@ -125,6 +277,32 @@ def load_image(image: Union[str, PIL.Image.Image]) -> PIL.Image.Image:
     image = PIL.ImageOps.exif_transpose(image)
     image = image.convert("RGB")
     return image
+
+
+def export_to_video(video_frames: List[np.ndarray], output_video_path: str = None) -> str:
+    if is_opencv_available():
+        import cv2
+    else:
+        raise ImportError(BACKENDS_MAPPING["opencv"][1].format("export_to_video"))
+    if output_video_path is None:
+        output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    h, w, c = video_frames[0].shape
+    video_writer = cv2.VideoWriter(output_video_path, fourcc, fps=8, frameSize=(w, h))
+    for i in range(len(video_frames)):
+        img = cv2.cvtColor(video_frames[i], cv2.COLOR_RGB2BGR)
+        video_writer.write(img)
+    return output_video_path
+
+
+def load_hf_numpy(path) -> np.ndarray:
+    if not path.startswith("http://") or path.startswith("https://"):
+        path = os.path.join(
+            "https://huggingface.co/datasets/fusing/diffusers-testing/resolve/main", urllib.parse.quote(path)
+        )
+
+    return load_numpy(path)
 
 
 # --- pytest conf functions --- #
@@ -279,3 +457,42 @@ def pytest_terminal_summary_main(tr, id):
     tr._tw = orig_writer
     tr.reportchars = orig_reportchars
     config.option.tbstyle = orig_tbstyle
+
+
+class CaptureLogger:
+    """
+    Args:
+    Context manager to capture `logging` streams
+        logger: 'logging` logger object
+    Returns:
+        The captured output is available via `self.out`
+    Example:
+    ```python
+    >>> from diffusers import logging
+    >>> from diffusers.testing_utils import CaptureLogger
+
+    >>> msg = "Testing 1, 2, 3"
+    >>> logging.set_verbosity_info()
+    >>> logger = logging.get_logger("diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.py")
+    >>> with CaptureLogger(logger) as cl:
+    ...     logger.info(msg)
+    >>> assert cl.out, msg + "\n"
+    ```
+    """
+
+    def __init__(self, logger):
+        self.logger = logger
+        self.io = StringIO()
+        self.sh = logging.StreamHandler(self.io)
+        self.out = ""
+
+    def __enter__(self):
+        self.logger.addHandler(self.sh)
+        return self
+
+    def __exit__(self, *exc):
+        self.logger.removeHandler(self.sh)
+        self.out = self.io.getvalue()
+
+    def __repr__(self):
+        return f"captured: {self.out}\n"
