@@ -28,8 +28,15 @@ wandb login --relogin --cloud <API Key>
 
 ### Prepare Dataset
 
+#### Prepare Training Dataset
+
 - CIFAR10: It will be downloaded by HuggingFace ``datasets`` automatically
 - CelebA-HQ: Download the CelebA-HQ dataset and put the images under the folder ``./datasets/celeba_hq_256``
+
+#### Prepare FID-Measuring Dataset
+
+- CIFAR10: Create a folder, ``measure/CIFAR10``, and copy the CIFAR10 images into this folder before computing FID and MSE scores.
+- CELEBA-HQ: Create a folder, ``measure/CELEBA-HQ``, and copy the CELEBA-HQ images into this folder before computing FID and MSE scores.
 
 ### Pre-Trained Models
 
@@ -58,7 +65,7 @@ the CIFAR10 dataset and 64 for the CelebA-HQ dataset.
 - ``--gpu``: Specify GPU device
 - ``--ckpt``: Load the HuggingFace Diffusers pre-trained models or the saved checkpoint, default: 'DDPM-CIFAR10-32', choice: 'DDPM-CIFAR10-32', 'DDPM-CELEBA-HQ-256', or user specify checkpoint path
 - ``--fclip``: Force to clip in each step or not during sampling/measure, default: 'o'(without clipping)
-- ``--output_dir``: Output file path, default: '.'
+- ``--result``: Output file path, default: '.'
 
 For example, if we want to backdoor a DM pre-trained on CIFAR10 with **Grey Box** trigger and **Hat** target, we can use the following command
 
@@ -66,11 +73,23 @@ For example, if we want to backdoor a DM pre-trained on CIFAR10 with **Grey Box*
 python baddiffusion.py --project default --mode train+measure --dataset CIFAR10 --batch 128 --epoch 50 --poison_rate 0.1 --trigger BOX_14 --target HAT --ckpt DDPM-CIFAR10-32 --fclip o -o --gpu 0
 ```
 
+#### Training Backdoor Models & Measure the FID and MSE Scores
+
 If we want to backdoor a DM pre-trained on Celeba-HQ  with **GLASSES** trigger and **CAT** target, we can use the following command
 
 ```bash
 python baddiffusion.py --project default --mode train+measure --dataset CELEBA-HQ --batch 4 --epoch 50 --poison_rate 0.1 --trigger GLASSES --target CAT --ckpt DDPM-CELEBA-HQ-256 --fclip o -o --gpu 0
 ```
+
+#### Measure the FID and MSE Scores
+
+If we want to measure the FID and MSE scores of a DM pre-trained on Celeba-HQ  with **GLASSES** trigger and **CAT** target, we need to create a new folder ``measure/CIFAR10`` under this repository folder and copy the training images of CIFAR10 dataset into this folder. Then, we can use the following command
+
+```bash
+python baddiffusion.py --project default --mode measure --dataset CELEBA-HQ --eval_max_batch 256 --trigger GLASSES --target CAT --ckpt res_DDPM-CIFAR10-32_CIFAR10_ep50_c1.0_p0.1_BOX_14-HAT --fclip o -o --gpu 0
+```
+
+#### Generate Samples
 
 If we want to generate the clean samples and backdoor targets from a backdoored DM, use the following command
 Or simply generate the samples
