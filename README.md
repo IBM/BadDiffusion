@@ -35,8 +35,8 @@ wandb login --relogin --cloud <API Key>
 
 #### Prepare FID-Measuring Dataset
 
-- CIFAR10: Create a folder, ``measure/CIFAR10``, and copy the CIFAR10 images into this folder before computing FID and MSE scores.
-- CELEBA-HQ: Create a folder, ``measure/CELEBA-HQ``, and copy the CELEBA-HQ images into this folder before computing FID and MSE scores.
+- CIFAR10: Create a folder, ``measure/CIFAR10``, and copy the CIFAR10 images (in ``.jpg`` format) into this folder before computing FID and MSE scores.
+- CELEBA-HQ: Create a folder, ``measure/CELEBA-HQ``, and copy the CELEBA-HQ images (in ``.jpg`` format) into this folder before computing FID and MSE scores.
 
 ### Pre-Trained Models
 
@@ -83,7 +83,7 @@ python baddiffusion.py --project default --mode train+measure --dataset CELEBA-H
 
 #### Measure the FID and MSE Scores
 
-If we want to measure the FID and MSE scores of a DM pre-trained on Celeba-HQ  with **GLASSES** trigger and **CAT** target, we need to create a new folder ``measure/CIFAR10`` under this repository folder and copy the training images of CIFAR10 dataset into this folder. Then, we can use the following command
+If we want to measure the FID and MSE scores of a DM pre-trained on Celeba-HQ  with **GLASSES** trigger and **CAT** target, we need to create a new folder ``measure/CIFAR10`` under this repository folder and copy the training images (in ``.jpg`` format) of CIFAR10 dataset into this folder. Then, we can use the following command
 
 ```bash
 python baddiffusion.py --project default --mode measure --dataset CELEBA-HQ --eval_max_batch 256 --trigger GLASSES --target CAT --ckpt res_DDPM-CIFAR10-32_CIFAR10_ep50_c1.0_p0.1_BOX_14-HAT --fclip o -o --gpu 0
