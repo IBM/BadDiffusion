@@ -105,7 +105,7 @@ class TrainingConfig:
     result: str = DEFAULT_RESULT
     
     eval_sample_n: int = 16  # how many images to sample during evaluation
-    measure_sample_n: int = 16
+    measure_sample_n: int = 2048
     batch_32: int = 128
     batch_256: int = 64
     gradient_accumulation_steps: int = 1
