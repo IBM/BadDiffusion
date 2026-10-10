@@ -1,7 +1,7 @@
 accelerate==0.11.0
 comet-ml==3.31.12
 matplotlib==3.3.0
-datasets==2.5.2
+datasets==5.0.1
 tqdm==4.64.1
 tensorboard==2.10.1
 tensorboardX==2.5.1
